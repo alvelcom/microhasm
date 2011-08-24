@@ -1,0 +1,1 @@
+del assembler.hi assebler.o main.hi main.o main.exe
