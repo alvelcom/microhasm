@@ -4,10 +4,9 @@ import Assembler
 
 
 
-asm :: MAsm ()
-asm = 
+rF :: MAsm ()
+rF = 
   do
-     mov Sp $ Num 16000  
 -----------------------  
 -- Main function
 -----------------------
@@ -43,12 +42,12 @@ asm =
    return ax + bx
 -}
      label "factorial"
-     jg (Aptr Sp 1) (Num 2) "factorial_rec" -- 7
+     jg (Ptr Sp 2) (Num 2) "factorial_rec" -- 7
      mov Ax $ Num 1
      ret
      label "factorial_rec"
 
-     mov Bx $ (Aptr Sp 1)
+     mov Bx $ (Ptr Sp 2)
      dec Bx $ Num 1
      push Bx
      call "factorial"
@@ -67,11 +66,28 @@ asm =
      label "end"
      mov Ax Ax
 
+
+fF :: MAsm ()
+fF = 
+  do 
+     mov Ax $ Num 1
+     mov Bx $ Num 1
+     inI Cx
+
+     label "lbl"
+     mov Dx Bx
+     add Dx Ax
+     mov Ax Bx
+     mov Bx Dx
+     dec Cx $ Num 1
+
+     jne Cx Nil "lbl"
+
+     outI Dx
      
 
 main :: IO ()     
 main = 
   do 
-     putStrLn $ show $ getAsm asm
-     execute 16000 asm
+     execute 16000 rF
      return ()

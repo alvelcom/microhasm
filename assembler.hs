@@ -3,52 +3,52 @@ module Assembler where
 
 import qualified Data.Map as M
 import Data.Maybe
+import Data.Array as A
+import Data.Array.IArray as I
+import Data.Array.IO
 import Control.Monad
 
 
 -- Base types
-data Assembler = Assembler [Cmd] (M.Map String Int)
-    deriving (Show)
+data Assembler = Assembler { 
+                            cmds  :: [Cmd],
+                            dicts :: (M.Map String Int)
+                           }
 
-data Memory = Memory [Int] Int
-    deriving (Eq, Read, Show)
+type MT = Int                         -- memory type
+data Memory = Memory (IOUArray Int Int)
+
+type Code = Array Int Cmd
+
     
 
 -- Opcodes    
-data Cmd = Act (Int -> Int -> Int)  Mem Mem 
-         | Jmp (Int -> Int -> Bool) Mem Mem String 
+data Cmd = Act  (MT -> MT -> MT)  Mem Mem 
+         | Jmp  (MT -> MT -> Bool) Mem Mem String 
+         | PJmp (MT -> MT -> Bool) Mem Mem Int 
          | Label String
-         | IOout (Int -> IO ()) Mem
-         | IOin  (IO (Int))     Mem
+         | IOout (MT -> IO ()) Mem
+         | IOin  (IO (MT))     Mem
          | Push Mem
          | Pop Mem
          | Ret
          | Call String
+         | PCall Int
          | Stop
-    deriving (Show)
 
-data Mem = Ax
+data Mem = Sp
+         | Ax
          | Bx
          | Cx
          | Dx
-         | Sp
-         | Ptr Mem
-         | Aptr Mem Int
+         | Ptr Mem Int
+         | Ref Mem
          | Offset Int
          | Num Int
          | Nil
     deriving (Eq, Read, Show)
 
 
-
-instance Show (Int -> Int -> Int) where
-    show _ = "iii"
-instance Show (Int -> Int -> Bool) where
-    show _ = "iib"
-instance Show (IO Int) where
-    show _ = "(IO Int)"
-instance Show (Int -> IO ()) where
-    show _ = "(IO Int -> ())"
 
 data MAsm a = MAsm (Assembler -> (a, Assembler))
 
@@ -135,181 +135,191 @@ pop                             :: Mem -> MAsm ()
 pop addr                        = mAsm (\(Assembler cmds dict) -> 
                                    Assembler (cmds ++ [Pop addr]) dict)                                   
 
+
+-- Nothing or Just
+jsj                             :: (Eq a) => Maybe a -> IO (Maybe b) -> IO (Maybe b)
+jsj t f | t == Nothing          = return Nothing
+        | otherwise             = f
+
+
+
 -- Memory managment
 memConst                        = 5
 
-memGet                          :: Mem -> Memory -> Maybe Int
-memGet Ax (Memory m _)          = Just $ m !! 1
-memGet Bx (Memory m _)          = Just $ m !! 2
-memGet Cx (Memory m _)          = Just $ m !! 3
-memGet Dx (Memory m _)          = Just $ m !! 4  
-memGet Sp (Memory m _)          = Just $ m !! 5 
-memGet (Offset addr) 
-       (Memory m size)          = if (addr <= (size + memConst) && addr > memConst)
-                                  then Just $ m !! (addr + memConst)
-                                  else Nothing
+  -- memory get 
+memGet 							:: Mem -> Memory -> IO (Maybe MT)
+memGet Sp (Memory m)            = liftM Just $ readArray m 0
+memGet Ax (Memory m)            = liftM Just $ readArray m 1
+memGet Bx (Memory m)            = liftM Just $ readArray m 2
+memGet Cx (Memory m)            = liftM Just $ readArray m 3
+memGet Dx (Memory m)            = liftM Just $ readArray m 4
 
-memGet (Ptr addr)
-       memory@(Memory m size)   = case (memGet addr memory) of
-                                    Nothing -> Nothing
-                                    Just addr' | addr' > memConst && addr' <= (size + memConst)
-                                                 -> Just $ m !! (addr' + memConst)
-                                               | otherwise 
-                                                 -> Nothing
-memGet (Aptr addr off)
-       memory@(Memory m size)   = case (memGet addr memory) of
-                                    Nothing -> Nothing
-                                    Just addr' | (addr' + off) > memConst && (addr' + off) <= (size + memConst)
-                                                 -> Just $ m !! (addr' + memConst + off)
-                                               | otherwise 
-                                                 -> Nothing                                                 
+memGet (Offset x) (Memory m)    = do bnd <- getBounds m
+                                     if x >= 0 && inRange bnd (x + memConst)
+                                      then liftM Just $ readArray m (x + memConst)
+                                      else return Nothing
                                   
-memGet (Num x) _                = Just x
-memGet Nil _                    = Just 0
+memGet (Ptr p off) m'@(Memory m)
+                                = do addr <- memGet p m'
+                                     jsj addr $ 
+                                       memGet (Offset ((fromJust addr) + off)) m'
+
+memGet (Ref p) m                = memGet (Ptr p 0) m
+memGet Nil _                    = return $ Just 0
+memGet (Num x) _                = return $ Just x
+
+
+  -- memory set
+memSet                          :: Mem -> MT -> Memory -> IO (Maybe ())
+memSet Sp v (Memory m)          = liftM Just $ writeArray m 0 v
+memSet Ax v (Memory m)          = liftM Just $ writeArray m 1 v
+memSet Bx v (Memory m)          = liftM Just $ writeArray m 2 v
+memSet Cx v (Memory m)          = liftM Just $ writeArray m 3 v
+memSet Dx v (Memory m)          = liftM Just $ writeArray m 4 v
+
+memSet (Offset x) v (Memory m)  = do bnd <- getBounds m
+                                     if x >= 0 && inRange bnd (x + memConst)
+                                      then liftM Just $ writeArray m (x + memConst) v
+                                      else return Nothing
+                                  
+memSet (Ptr p off) v m
+                                = do addr <- memGet p m
+                                     jsj addr $ 
+                                       memSet (Offset ((fromJust addr) + off)) v m
+
+memSet (Ref p) v m              = memSet (Ptr p 0) v m
+memSet Nil _ _                  = return $ Just ()
+memSet (Num _) _ _              = return $ Just ()
 
 
 
-memUpdate'                      :: Maybe Int -> (Int -> Int) -> Memory -> Maybe Memory
-memUpdate' Nothing _ _          = Nothing
-memUpdate' (Just x)
-           f
-           (Memory m s) | (x > 0 && x <= (s + memConst)) 
-                                = let (begin, end) = splitAt x m
-                                  in Just $ Memory (begin ++ [f $ head end] ++ (tail end)) s
-                                                           
-                        | otherwise
-                                = Nothing
-
-memUpdate                       :: Mem -> (Int -> Int) -> Memory -> Maybe Memory
-memUpdate Ax v m                = memUpdate' (Just 1) v m
-memUpdate Bx v m                = memUpdate' (Just 2) v m
-memUpdate Cx v m                = memUpdate' (Just 3) v m
-memUpdate Dx v m                = memUpdate' (Just 4) v m
-memUpdate Sp v m                = memUpdate' (Just 5) v m
-memUpdate addr@(Offset _)
-          val
-          mem                   = let addr' = memGet addr mem 
-                                   in if addr' == Nothing
-                                      then Nothing
-                                      else memUpdate' (Just ((memConst) + (fromJust addr'))) val mem
-
-memUpdate (Aptr addr off)
-          val
-          mem                   = let addr' = memGet addr mem 
-                                   in if addr' == Nothing
-                                      then Nothing
-                                      else memUpdate' (Just ((memConst) + off + (fromJust addr'))) val mem
-memUpdate (Ptr addr)
-          val
-          mem                   = let addr' = memGet addr mem 
-                                   in if addr' == Nothing
-                                      then Nothing
-                                      else memUpdate' (Just ((memConst) + (fromJust addr'))) val mem
-         
-memUpdate (Num _) _ _           = Nothing
-memUpdate Nil _ _               = Nothing
+  -- memory update
+memUpdate                       :: Mem -> (MT -> MT) -> Memory -> IO (Maybe ())
+memUpdate p f m                 = do v <- memGet p m
+                                     jsj v $ memSet p (f $ fromJust v) m
 
 
-memSet                          :: Mem -> Int -> Memory -> Maybe Memory
-memSet p val                    = memUpdate p (\ _ -> val)
-
-
-memAlloc                        :: Int -> Memory
-memAlloc size                   = Memory (take (size + memConst) (repeat 0) {-[1..] -}) size
+-- Is Nothing
+isn                             :: (Eq a) => Int -> String -> IO (Maybe a) -> IO a
+isn line msg v                  = v >>= (\v' ->  if v' == Nothing
+                                                  then error ((show line) ++ ": " ++ msg)
+                                                  else return $ fromJust v'
+                                        )
+{-
+memDump                         :: Memory -> Int -> IO ()
+memDump (Memory m) ip           = do
+                                     l <- getElems m
+                                     putStrLn $ show (ip, l)
+-}
 
 -- Interpreter
+evaluate                        :: Code -> Memory -> IO ()
+evaluate code mem
+  = let eval                    :: Int -> Cmd -> IO (Int)
+        eval ip (Act f to from) = do from' <- isn ip "Operand 'from': get error" $
+                                                  memGet from mem
+                                     to'   <- isn ip "Operand 'to': get error" $
+                                                  memGet to mem 
+                                     isn ip "Operand 'to': write error" $
+                                         memSet to (f to' from') mem
+                                     return (ip+1)
 
-eval                           :: Assembler -> Memory -> Int -> IO Memory
-eval asm@(Assembler cmd dict) mem eip
-  = if (eip >= length cmd) || (eip < 0)
-    then return mem
-    else do (eip', mem') <- runCmd mem (cmd !! eip) eip dict
-            --putStrLn $ show (eip, eip', mem')
-            eval asm mem' eip'
-    
+        eval ip (PJmp f a b to) 
+                                = do a' <- isn ip "Operand 'a': get error" $
+                                               memGet a mem
+                                     b' <- isn ip "Operand 'b': get error" $
+                                               memGet b mem 
+                                     if f a' b'
+                                      then return to
+                                      else return (ip+1)
 
-runCmd                         :: Memory -> Cmd -> Int -> M.Map String Int -> IO (Int, Memory)
-runCmd mem (Act op to from) eip _
-      = if (to' == Nothing) || (from' == Nothing)
-        then error "ACT: Memory read error"
-        else let c    = op (fromJust to') (fromJust from')
-                 mem' = memSet to c mem
-             in if mem' == Nothing
-                then error "Memory write error"
-                else return (eip + 1, fromJust mem')
-        where            
-          to'   = memGet to mem
-          from' = memGet from mem
+        eval ip (IOin f to)     = do v <- f
+                                     isn ip "Operand: write error" $
+                                         memSet to v mem
+                                     return (ip+1)
 
-runCmd mem (Jmp bool a b name) eip dict
-      = if (a' == Nothing) || (b' == Nothing)
-        then error "JUMP: Memory read error"
-        else if bool (fromJust a') (fromJust b')
-             then case (M.lookup name dict) of
-                    Nothing -> error "Invalid label for jump"
-                    Just i -> return (i, mem)
-             else return (eip + 1, mem)
-        where            
-          a' = memGet a mem
-          b' = memGet b mem          
+        eval ip (IOout f from)  = do v <- isn ip "Operand: read error" $
+                                              memGet from mem
+                                     f v
+                                     return (ip+1)
+                                     
+        eval ip (Push from)     = do v <- isn ip "Operand: read error" $
+                                              memGet from mem
+                                     isn ip "Stack write error" $
+                                              memSet (Ref Sp) v mem
+                                     isn ip "Sp update error" $
+                                              memUpdate Sp ((-1) +) mem
+                                     return (ip + 1)
 
-runCmd mem (IOout op from) eip _
-      = if from' == Nothing
-        then error "IO: Memory read error"
-        else do op (fromJust from')
-                return (eip + 1, mem)
-        where            
-          from' = memGet from mem
+        eval ip (Pop to)        = do isn ip "Sp update error" $
+                                         memUpdate Sp (1 +) mem                                     
+                                     v <- isn ip "Stack read error" $
+                                              memGet (Ref Sp) mem
+                                     isn ip "Operand: write error" $
+                                         memSet to v mem
+                                     return (ip + 1)
 
-runCmd mem (IOin op to) eip _
-      = if to' == Nothing
-        then error "Memory read error"
-        else do c        <- op 
-                let mem' =  memSet to c mem
-                if mem' == Nothing
-                  then error "Memory write error"
-                  else return (eip + 1, fromJust mem')
-        where            
-          to'   = memGet to mem
+        eval ip (PCall to)      = do isn ip "Can't push to stack Ip" $
+                                         memSet (Ref Sp) ip mem
+                                     isn ip "Sp update error" $
+                                              memUpdate Sp ((-1) +) mem
+                                     return to
 
-runCmd mem (Call name) eip dict
-      = case (M.lookup name dict) of
-          Nothing -> error "Invalid label for call"
-          Just i -> do let mem' = memSet (Ptr Sp) (eip + 1) $ fromJust $ memUpdate Sp ((-1)+) mem
-                        in if mem' == Nothing 
-                            then error "Stack is overflow"
-                            else return (i, fromJust mem')
+        eval ip Ret             = do isn ip "Sp update error" $
+                                         memUpdate Sp (1 +) mem 
+                                     v <- isn ip "Stack read error" $
+                                              memGet (Ref Sp) mem
+                                     return (v + 1)
 
-runCmd mem Ret eip dict
-      = do let eip' = memGet (Ptr Sp) mem
-            in if eip' == Nothing
-                then error "Bad return address"
-                else return (fromJust eip', fromJust $ memUpdate Sp (1+) mem)
+                                     
+        loop                    :: Int -> IO ()
+        loop ip                 = if inRange (A.bounds code) ip
+                                   then do ip' <- eval ip (code A.! ip)
+                                           -- memDump mem ip
+                                           loop ip'
+                                           
+                                   else return ()
+     in loop 0
 
-           
-runCmd mem (Pop addr) eip _
-      = let rsp  = memGet (Ptr Sp) mem
-            mem' = memSet addr (fromJust rsp) mem
-        in if rsp == Nothing ||  mem' == Nothing 
-           then error "Memory write error in POP operation"
-           else return (eip + 1, fromJust $ memUpdate Sp (1+) $ fromJust mem')
 
-runCmd mem (Push addr) eip _
-      = let mem' = fromJust $ memUpdate Sp ((-1)+) mem
-            val = memGet addr mem'
-            mem'' = memSet (Ptr Sp) (fromJust val) mem'
-        in if val == Nothing || mem'' == Nothing
-           then error "Memory read error in PUSH operation"
-           else return (eip + 1, fromJust mem'')
-   
-runCmd mem Stop _ _ = return (-1, mem)
+
+
+
+asmToCode                       :: Assembler -> Assembler
+asmToCode (Assembler ((Call name):as) dict)
+                                = case (M.lookup name dict) of
+                                    Nothing  -> error ("Call destination unresolved: " ++ name)
+                                    (Just i) -> (Assembler
+                                                 ((PCall i):(cmds $ asmToCode (Assembler as dict)))
+                                                 dict)
+asmToCode (Assembler ((Jmp f a b name):as) dict)
+                                = case (M.lookup name dict) of
+                                    Nothing  -> error ("Call destination unresolved: " ++ name)
+                                    (Just i) -> (Assembler
+                                                 ((PJmp f a b i):(cmds $ asmToCode (Assembler as dict)))
+                                                 dict)
+asmToCode (Assembler (a:as) dict)  
+                                = (Assembler (a:(cmds $ asmToCode (Assembler as dict))) dict)
+
+asmToCode (Assembler [] dict)      = Assembler [] dict
 
 
 -- Execute
 
+boot :: Int -> MAsm () -> MAsm ()
+boot size client
+  = do mov Sp $ Num size
+       client
+
+
 execute :: Int -> MAsm () -> IO ()
-execute size masm = do eval (getAsm masm) (memAlloc size) 0
-                       return ()  
+execute size masm
+  = do let asm = getAsm (boot size masm)
+           (Assembler asm' _) = asmToCode asm
+           codeArray = A.listArray (0, -1 + length asm') asm'
+       mem <- newArray (0, memConst + size) 0 :: IO (IOUArray Int Int)
+       evaluate codeArray (Memory mem)
+       return ()  
 
 
 
