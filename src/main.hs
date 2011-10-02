@@ -1,7 +1,7 @@
 module Main (main) where
 
 import Assembler
-
+import LibAsm
 
 
 rF :: MAsm ()
@@ -12,12 +12,10 @@ rF =
 -----------------------
      label "main"
      
-     inI Ax
-     push Ax
-     call "factorial" -- 3
-     add Sp $ Num 1
- 
-     outI Ax
+     
+     push Nil
+     
+     
 
      call "end"
      
@@ -64,7 +62,7 @@ rF =
 
 -----------------------
      label "end"
-     mov Ax Ax
+
 
 
 fF :: MAsm ()
@@ -89,5 +87,5 @@ fF =
 main :: IO ()     
 main = 
   do 
-     execute 16000 rF
+     execute 16000 (libAsm >> rF)
      return ()

@@ -1,12 +1,29 @@
 module Assembler where
 
 
+import Prelude (
+        (+), (-), (*), (/),
+        (++), ($), (&&), (||),
+        (.),
+        (==), (/=), 
+        (>=), (>), (<=), (<),
+        IO, Eq, String, Read, Show,
+        Int, Bool, 
+        snd, length, putStr, show, read, getLine,
+        otherwise, error
+        )
+        
+import qualified Prelude as P
 import qualified Data.Map as M
 import Data.Maybe
 import Data.Array as A
 import Data.Array.IArray as I
 import Data.Array.IO
 import Control.Monad
+
+import Data.Bits ( (.|.), (.&.) )
+import qualified Data.Bits as B
+
 
 
 -- Base types
@@ -68,13 +85,58 @@ mov to from                     = mAsm (\(Assembler cmds dict) ->
                                    Assembler 
                                     (cmds ++ [Act (\a b -> b) to from]) dict)
 
+    -- Math
 add                             :: Mem -> Mem -> MAsm ()
 add to from                     = mAsm (\(Assembler cmds dict) -> 
                                    Assembler (cmds ++ [Act (+) to from]) dict)
+inc                             :: Mem -> MAsm ()
+inc to                          = mAsm (\(Assembler cmds dict) -> 
+                                   Assembler (cmds ++ [Act (\a _ -> 1 + a) to Nil]) dict)                                   
 
 dec                             :: Mem -> Mem -> MAsm ()
 dec to from                     = mAsm (\(Assembler cmds dict) -> 
                                    Assembler (cmds ++ [Act (-) to from]) dict)
+
+decr                             :: Mem -> MAsm ()
+decr to                          = mAsm (\(Assembler cmds dict) -> 
+                                   Assembler (cmds ++ [Act (\a _ -> a - 1) to Nil]) dict) 
+
+
+mul                             :: Mem -> Mem -> MAsm ()
+mul to from                     = mAsm (\(Assembler cmds dict) -> 
+                                   Assembler (cmds ++ [Act (*) to from]) dict)
+
+div                             :: Mem -> Mem -> MAsm ()
+div to from                     = mAsm (\(Assembler cmds dict) -> 
+                                   Assembler (cmds ++ [Act P.div to from]) dict)                                   
+
+mod                             :: Mem -> Mem -> MAsm ()
+mod to from                     = mAsm (\(Assembler cmds dict) -> 
+                                   Assembler (cmds ++ [Act P.mod to from]) dict)   
+
+
+shl                             :: Mem -> Mem -> MAsm ()
+shl to off                      = mAsm (\(Assembler cmds dict) -> 
+                                   Assembler (cmds ++ [Act B.shiftL to off]) dict)
+
+shr                             :: Mem -> Mem -> MAsm ()
+shr to off                      = mAsm (\(Assembler cmds dict) -> 
+                                   Assembler (cmds ++ [Act B.shiftR to off]) dict)
+
+xor                             :: Mem -> Mem -> MAsm ()
+xor to from                     = mAsm (\(Assembler cmds dict) -> 
+                                   Assembler (cmds ++ [Act B.xor to from]) dict)
+
+and                             :: Mem -> Mem -> MAsm ()
+and to off                      = mAsm (\(Assembler cmds dict) -> 
+                                   Assembler (cmds ++ [Act (.&.) to off]) dict)
+
+or                              :: Mem -> Mem -> MAsm ()
+or to off                       = mAsm (\(Assembler cmds dict) -> 
+                                   Assembler (cmds ++ [Act (.|.) to off]) dict)
+
+
+
 
 jmp                             :: String -> MAsm ()
 jmp to                          = mAsm (\(Assembler cmds dict) -> 
@@ -301,7 +363,7 @@ asmToCode (Assembler ((Jmp f a b name):as) dict)
 asmToCode (Assembler (a:as) dict)  
                                 = (Assembler (a:(cmds $ asmToCode (Assembler as dict))) dict)
 
-asmToCode (Assembler [] dict)      = Assembler [] dict
+asmToCode (Assembler [] dict)   = Assembler [] dict
 
 
 -- Execute
